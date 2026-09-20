@@ -38,25 +38,30 @@ const createScene = async function () {
     scene.collisionsEnabled = true;
     scene.gravity = new BABYLON.Vector3(0, -0.5, 0);
 
-    // Cámara inicial
-    const camera = new BABYLON.UniversalCamera(
-        "camera",
-        new BABYLON.Vector3(0, 1.70, -5),
-        scene
-    );
+   // ===== CAMARA PARA MAQUETA =====
+const camera = new BABYLON.ArcRotateCamera(
+    "cameraMaqueta",
+    BABYLON.Tools.ToRadians(45),
+    BABYLON.Tools.ToRadians(65),
+    2.20,
+    new BABYLON.Vector3(0, 0.95, 0),
+    scene
+);
 
-    camera.attachControl(canvas, true);
-    camera.speed = 0.06;
-    camera.minZ = 0.05;
-    
-    camera.applyGravity = false;
-    camera.checkCollisions = true;
-    camera.ellipsoid = new BABYLON.Vector3(0.4, 0.85, 0.4);
+camera.attachControl(canvas, true);
+camera.minZ = 0.01;
 
-    camera.keysUp.push(87);     // W
-    camera.keysDown.push(83);   // S
-    camera.keysLeft.push(65);   // A
-    camera.keysRight.push(68);  // D
+// Limites de zoom
+camera.lowerRadiusLimit = 0.70;
+camera.upperRadiusLimit = 4.00;
+
+// Limites verticales para no voltear la camara
+camera.lowerBetaLimit = BABYLON.Tools.ToRadians(20);
+camera.upperBetaLimit = BABYLON.Tools.ToRadians(85);
+
+// Suavidad de movimiento
+camera.wheelPrecision = 50;
+camera.panningSensibility = 1000;
 
     // Luz
     const light = new BABYLON.HemisphericLight(
@@ -71,7 +76,7 @@ const createScene = async function () {
     const result = await BABYLON.SceneLoader.ImportMeshAsync(
         "",
         "./",
-        "20 DE JULIO 5 PISOS.glb",
+        "1.1.2.1 3D-RA 20 JULIO MONTAJE.glb",
         scene
     );
 
@@ -82,23 +87,114 @@ const createScene = async function () {
 
 
     // Encuadrar automaticamente el modelo cargado
-const meshes = result.meshes.filter(m => m.getTotalVertices && m.getTotalVertices() > 0);
+const candidatos = result.meshes.filter(m =>
+    m.getTotalVertices &&
+    m.getTotalVertices() > 0
+);
+
+// Centro aproximado del grupo principal
+const centros = candidatos.map(m =>
+    m.getBoundingInfo().boundingBox.centerWorld
+);
+
+const xs = centros.map(c => c.x).sort((a,b) => a-b);
+const ys = centros.map(c => c.y).sort((a,b) => a-b);
+const zs = centros.map(c => c.z).sort((a,b) => a-b);
+
+const medio = a => a[Math.floor(a.length / 2)];
+
+const centroPrincipal = new BABYLON.Vector3(
+    medio(xs),
+    medio(ys),
+    medio(zs)
+);
+
+// Solo geometría cercana al edificio real
+const meshes = candidatos.filter(m => {
+    const c = m.getBoundingInfo().boundingBox.centerWorld;
+
+    return (
+        Math.abs(c.x - centroPrincipal.x) < 60 &&
+        Math.abs(c.y - centroPrincipal.y) < 60 &&
+        Math.abs(c.z - centroPrincipal.z) < 20
+    );
+});
+    
 const bounds = BABYLON.Mesh.MinMax(meshes);
 const center = BABYLON.Vector3.Center(bounds.min, bounds.max);
 const size = bounds.max.subtract(bounds.min);
 const maxSize = Math.max(size.x, size.y, size.z);
+console.log("BOUNDS MIN:", bounds.min);
+console.log("BOUNDS MAX:", bounds.max);
+console.log("CENTER:", center);
+console.log("SIZE:", size);
+console.log("MAX SIZE:", maxSize);
+  
 
-camera.position = new BABYLON.Vector3(
-    center.x,
-    bounds.min.y + 1.50,
-    bounds.min.z - maxSize * 0.15
+    // ===== MODO MAQUETA: reducir modelo a 80 cm =====
+const tamanoMaqueta = 1.20;
+
+// Dimensión horizontal real del proyecto
+const tamanoHorizontal = Math.max(size.x, size.z);
+
+// Escala automática
+const escalaMaqueta = tamanoMaqueta / tamanoHorizontal;
+
+const maquetaRoot = new BABYLON.TransformNode("maquetaRoot", scene);
+
+result.meshes
+    .filter(mesh => !mesh.parent)
+    .forEach(mesh => {
+        mesh.parent = maquetaRoot;
+    });
+
+maquetaRoot.scaling = new BABYLON.Vector3(
+    escalaMaqueta,
+    escalaMaqueta,
+    escalaMaqueta
 );
 
-camera.setTarget(new BABYLON.Vector3(
-    center.x,
-    bounds.min.y + 1.50,
-    center.z
-));
+    // ===== POSICIONAR MAQUETA SOBRE MESA =====
+const alturaMesa = 0.80;
+
+// ===== PIVOTE CENTRAL FIJO DE LA MAQUETA =====
+const giroRoot = new BABYLON.TransformNode("giroRoot", scene);
+
+// El pivote queda exactamente en el centro de la mesa
+giroRoot.position = new BABYLON.Vector3(
+    0,
+    alturaMesa,
+    0
+);
+
+// El edificio pasa a depender del pivote
+maquetaRoot.parent = giroRoot;
+
+// Posición LOCAL respecto al pivote
+maquetaRoot.position = new BABYLON.Vector3(
+    -center.x * escalaMaqueta,
+    -bounds.min.y * escalaMaqueta,
+    -center.z * escalaMaqueta
+);
+// Mesa virtual
+const mesa = BABYLON.MeshBuilder.CreateBox(
+    "mesaMaqueta",
+    {
+        width: tamanoMaqueta,
+        depth: tamanoMaqueta,
+        height: 0.05
+    },
+    scene
+);
+    
+// La mesa gira junto con toda la maqueta
+mesa.parent = giroRoot;
+
+mesa.position = new BABYLON.Vector3(
+    0,
+    -0.025,
+    0
+);
 
 console.log("CENTRO MODELO:", center);
 console.log("TAMANO MODELO:", size);
@@ -110,20 +206,80 @@ const xr = await scene.createDefaultXRExperienceAsync({
     floorMeshes: [],
     disableTeleportation: true
 });
+        
+  // ===== GIRO XR DE LA MAQUETA SOBRE SU EJE =====
+let giroJoystickX = 0;
+let giroJoystickY = 0;
+let gripPressed = false;
 
-const featuresManager = xr.baseExperience.featuresManager;
+xr.input.onControllerAddedObservable.add((xrController) => {
 
-featuresManager.enableFeature(
-    BABYLON.WebXRFeatureName.MOVEMENT,
-    "latest",
-    {
-        xrInput: xr.input,
-        movementOrientationFollowsViewerPose: true,
-        movementSpeed: 0.08,
-        rotationSpeed: 0.20
+    if (xrController.inputSource.handedness !== "right") return;
+
+    xrController.onMotionControllerInitObservable.add((motionController) => {
+    const grip = motionController.getComponentOfType("squeeze");
+
+    if (grip) {
+        grip.onButtonStateChangedObservable.add((component) => {
+            gripPressed = component.pressed;
+    });
+}
+        
+        const joystick = motionController.getComponent("xr-standard-thumbstick");
+
+        if (!joystick) return;
+
+        joystick.onAxisValueChangedObservable.add((axes) => {
+            giroJoystickX = axes.x;
+            giroJoystickY = axes.y;
+        });
+    });
+});
+
+ scene.onBeforeRenderObservable.add(() => {
+
+    // Giro horizontal 360°
+    if (Math.abs(giroJoystickX) > 0.15) {
+        giroRoot.rotation.y += giroJoystickX * 0.025;
     }
-);
-      
+
+    // Inclinación limitada
+    // Sin grip: inclinación limitada
+if (!gripPressed && Math.abs(giroJoystickY) > 0.15) {
+
+    giroRoot.rotation.x += giroJoystickY * 0.005;
+
+    const limiteInclinacion = BABYLON.Tools.ToRadians(10);
+
+    giroRoot.rotation.x = BABYLON.Scalar.Clamp(
+        giroRoot.rotation.x,
+        -limiteInclinacion,
+        limiteInclinacion
+    );
+}
+
+// Con grip: acercar / alejar
+if (gripPressed && Math.abs(giroJoystickY) > 0.15) {
+
+    const velocidadZoom = 0.01;
+
+    giroRoot.scaling.x += -giroJoystickY * velocidadZoom;
+    giroRoot.scaling.y += -giroJoystickY * velocidadZoom;
+    giroRoot.scaling.z += -giroJoystickY * velocidadZoom;
+
+    const escalaMin = 0.60;
+    const escalaMax = 2.50;
+
+    const escalaNueva = BABYLON.Scalar.Clamp(
+        giroRoot.scaling.x,
+        escalaMin,
+        escalaMax
+    );
+
+    giroRoot.scaling.setAll(escalaNueva);
+}
+
+});
         console.log("SGOC XR ACTIVO");
 
     } catch (error) {
@@ -150,3 +306,4 @@ window.addEventListener("resize", function () {
 
 </body>
 </html>
+<!D
